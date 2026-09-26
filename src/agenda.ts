@@ -66,14 +66,38 @@ export function parserIcs(texte: string): Omit<Reunion, 'id'>[] {
   return reunions
 }
 
-/** Récupère le flux iCal via le proxy local du serveur de dev. */
+/**
+ * Récupère le flux iCal, par ordre de préférence :
+ * 1. proxy local du serveur de dev (version locale)
+ * 2. fichier statique ./calendrier.ics (version en ligne, synchronisé
+ *    toutes les heures par le workflow GitHub)
+ * 3. relais public allorigins (secours temps réel)
+ */
 export async function recupererCalendrierGoogle(icalUrl: string): Promise<Omit<Reunion, 'id'>[]> {
-  const reponse = await fetch(`/api/ical?url=${encodeURIComponent(icalUrl)}`)
-  if (!reponse.ok) {
-    const detail = await reponse.text()
-    throw new Error(detail || `Erreur ${reponse.status}`)
+  const tentatives: { nom: string; url: string }[] = [
+    { nom: 'proxy local', url: `/api/ical?url=${encodeURIComponent(icalUrl)}` },
+    { nom: 'fichier synchronisé', url: './calendrier.ics' },
+    { nom: 'relais public', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(icalUrl)}` },
+  ]
+  const erreurs: string[] = []
+  for (const t of tentatives) {
+    try {
+      const reponse = await fetch(t.url)
+      if (!reponse.ok) {
+        erreurs.push(`${t.nom} : HTTP ${reponse.status}`)
+        continue
+      }
+      const texte = await reponse.text()
+      if (!texte.includes('BEGIN:VCALENDAR')) {
+        erreurs.push(`${t.nom} : réponse invalide`)
+        continue
+      }
+      return parserIcs(texte)
+    } catch (e) {
+      erreurs.push(`${t.nom} : ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
-  return parserIcs(await reponse.text())
+  throw new Error(`calendrier introuvable (${erreurs.join(' ; ')})`)
 }
 
 /** « 14h00 » ou « 14:30 » → { h: 14, m: 0 } (défaut 14h00). */
